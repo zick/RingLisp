@@ -413,45 +413,6 @@ uintptr_t pairlis(uintptr_t lst1, uintptr_t lst2) {
 }
 
 uintptr_t eval(uintptr_t obj, uintptr_t env);
-
-uintptr_t progn(uintptr_t body, uintptr_t env) {
-  uintptr_t ret = nil;
-  while (isCons(body)) {
-    RETURN_IF_STALE(body);
-    Cons* c = toCons(body);
-    body = c->cdr;  // keep next exp before eval to prevent cons breakage.
-    ret = eval(c->car, env);
-    RETURN_IF_ERROR(ret);
-  }
-  return ret;
-}
-
-uintptr_t apply(uintptr_t fn, uintptr_t args, uintptr_t env) {
-  RETURN_IF_STALE(fn);
-  RETURN_IF_STALE(args);
-  RETURN_IF_ERROR(fn);
-  RETURN_IF_ERROR(args);
-  if (isType(fn, Type::kSbr)) {
-    return toData(fn)->data.func(args);
-  } else if (isCons(fn)) {
-    if (safeCar(fn) == sym_expr) {
-      uintptr_t o = safeCdr(fn);  // o = (env args . body)
-      RETURN_IF_STALE(o);
-      uintptr_t e = safeCar(o);
-      o = safeCdr(o);  // o = (args . body)
-      RETURN_IF_STALE(o);
-      uintptr_t a = safeCar(o);
-      return progn(safeCdr(o), makeCons(pairlis(a, args), e));
-    } else if (safeCar(fn) == sym_lambda) {
-      uintptr_t o = safeCdr(fn);  // o = (args . body)
-      RETURN_IF_STALE(o);
-      uintptr_t a = safeCar(o);
-      return progn(safeCdr(o), makeCons(pairlis(a, args), env));
-    }
-  }
-  return makeError("noimpl");
-}
-
 uintptr_t evlis(uintptr_t lst, uintptr_t env) {
   uintptr_t ret = nil;
   while (isCons(lst)) {
@@ -465,6 +426,7 @@ uintptr_t evlis(uintptr_t lst, uintptr_t env) {
 }
 
 uintptr_t eval(uintptr_t obj, uintptr_t env) {
+ eval:  // eval(obj, env)
   if (isType(obj, Type::kNil) || isType(obj, Type::kErr) ||
       isType(obj, Type::kStl) || isType(obj, Type::kSbr) || isFnum(obj)) {
     return obj;
@@ -489,9 +451,13 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
     RETURN_IF_ERROR(c);
     RETURN_IF_STALE(c);
     if (c == nil) {
-      return eval(safeCar(safeCdr(safeCdr(args))), env);
+      // Call eval(obj, env)
+      obj = safeCar(safeCdr(safeCdr(args)));
+      goto eval;
     } else {
-      return eval(safeCar(safeCdr(args)), env);
+      // Call eval(obj, env)
+      obj = safeCar(safeCdr(args));
+      goto eval;
     }
   } else if (op == sym_lambda) {
     return makeExpr(args, env);
@@ -522,7 +488,57 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
     }
     return val;
   }
-  return apply(eval(op, env), evlis(args, env), env);
+
+  // Call apply(fn, args, env)
+  uintptr_t fn = eval(op, env);
+  args = evlis(args, env);
+ apply:  // apply(fn, args, env)
+  uintptr_t body;
+  RETURN_IF_STALE(fn);
+  RETURN_IF_STALE(args);
+  RETURN_IF_ERROR(fn);
+  RETURN_IF_ERROR(args);
+  if (isType(fn, Type::kSbr)) {
+    return toData(fn)->data.func(args);
+  } else if (isCons(fn)) {
+    if (safeCar(fn) == sym_expr) {
+      uintptr_t o = safeCdr(fn);  // o = (env args . body)
+      RETURN_IF_STALE(o);
+      uintptr_t e = safeCar(o);
+      o = safeCdr(o);  // o = (args . body)
+      RETURN_IF_STALE(o);
+      uintptr_t a = safeCar(o);
+      // Call progn(body, env)
+      body = safeCdr(o);
+      env = makeCons(pairlis(a, args), e);
+      goto progn;
+    } else if (safeCar(fn) == sym_lambda) {
+      uintptr_t o = safeCdr(fn);  // o = (args . body)
+      RETURN_IF_STALE(o);
+      uintptr_t a = safeCar(o);
+      // Call progn(body, env)
+      body = safeCdr(o);
+      env = makeCons(pairlis(a, args), env);
+      goto progn;
+    }
+  }
+  return makeError("noimpl");
+
+ progn:  // progn(body, env)
+  uintptr_t ret = nil;
+  while (isCons(body)) {
+    RETURN_IF_STALE(body);
+    Cons* c = toCons(body);
+    body = c->cdr;
+    if (body == nil) {
+      // Call eval(obj, env)
+      obj = c->car;
+      goto eval;
+    }
+    ret = eval(c->car, env);
+    RETURN_IF_ERROR(ret);
+  }
+  return ret;
 }
 
 uintptr_t subrCar(uintptr_t args) {
