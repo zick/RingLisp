@@ -1,4 +1,6 @@
 // g++ -Wall --std=c++17 ringlisp.cc
+#include <array>
+#include <charconv>
 #include <ctype.h>
 #include <iostream>
 #include <map>
@@ -108,7 +110,7 @@ int gen(uintptr_t obj) {
 int current_gen(uintptr_t obj) {
   void* p = ptr(obj);
   void* head = reinterpret_cast<void*>(alloc_head);
-  if (p > head) {
+  if (p >= head) {
     return (generation - 1) & ((kWordSize - 1) >> 1);
   }
   return generation;
@@ -254,14 +256,15 @@ uintptr_t readAtom(std::string_view* str) {
 }
 
 uintptr_t nreverse(uintptr_t lst) {
+  RETURN_IF_STALE(lst);
   uintptr_t ret = nil;
   while (isCons(lst)) {
-    RETURN_IF_STALE(lst);
     Cons* cons = toCons(lst);
     uintptr_t tmp = cons->cdr;
     cons->cdr = ret;
     ret = lst;
     lst = tmp;
+    RETURN_IF_STALE(lst);
   }
   return ret;
 }
@@ -357,8 +360,13 @@ std::string objToString(uintptr_t obj) {
       return "<subr>";
     case Type::kErr:
       return "<error: " + *d->data.str + ">";
-    case Type::kStl:
-      return "<stale value: " + std::to_string(obj) + ">";
+    case Type::kStl: {
+      std::array<char, 64> buf;
+      auto [p, _] =
+        std::to_chars(buf.data(), buf.data() + buf.size(), d->data.obj, 16);
+      std::string hex(buf.data(), p - buf.data());
+      return "<stale value: " + hex + ">";
+    }
     default:
       return "<unknown object>";
     }
@@ -399,28 +407,32 @@ uintptr_t makeExpr(uintptr_t obj, uintptr_t env) {
 }
 
 uintptr_t pairlis(uintptr_t lst1, uintptr_t lst2) {
+  RETURN_IF_STALE(lst1);
+  RETURN_IF_STALE(lst2);
   uintptr_t ret = nil;
   while (isCons(lst1) && isCons(lst2)) {
+    uintptr_t x = safeCar(lst1);
+    uintptr_t y = safeCar(lst2);
+    lst1 = safeCdr(lst1);
+    lst2 = safeCdr(lst2);
+    ret = makeCons(makeCons(x, y), ret);
     RETURN_IF_STALE(lst1);
     RETURN_IF_STALE(lst2);
-    Cons* c1 = toCons(lst1);
-    Cons* c2 = toCons(lst2);
-    ret = makeCons(makeCons(c1->car, c2->car), ret);
-    lst1 = c1->cdr;
-    lst2 = c2->cdr;
   }
   return nreverse(ret);
 }
 
 uintptr_t eval(uintptr_t obj, uintptr_t env);
 uintptr_t evlis(uintptr_t lst, uintptr_t env) {
+  RETURN_IF_STALE(lst);
   uintptr_t ret = nil;
   while (isCons(lst)) {
-    RETURN_IF_STALE(lst);
-    uintptr_t elm = eval(safeCar(lst), env);
+    uintptr_t a = safeCar(lst);
+    lst = safeCdr(lst);
+    uintptr_t elm = eval(a, env);
     RETURN_IF_ERROR(elm);
     ret = makeCons(elm, ret);
-    lst = safeCdr(lst);
+    RETURN_IF_STALE(lst);
   }
   return nreverse(ret);
 }
@@ -505,9 +517,11 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
       uintptr_t o = safeCdr(fn);  // o = (env args . body)
       RETURN_IF_STALE(o);
       uintptr_t e = safeCar(o);
+      RETURN_IF_STALE(e)
       o = safeCdr(o);  // o = (args . body)
       RETURN_IF_STALE(o);
       uintptr_t a = safeCar(o);
+      RETURN_IF_STALE(a);
       // Call progn(body, env)
       body = safeCdr(o);
       env = makeCons(pairlis(a, args), e);
@@ -516,6 +530,7 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
       uintptr_t o = safeCdr(fn);  // o = (args . body)
       RETURN_IF_STALE(o);
       uintptr_t a = safeCar(o);
+      RETURN_IF_STALE(a);
       // Call progn(body, env)
       body = safeCdr(o);
       env = makeCons(pairlis(a, args), env);
@@ -525,9 +540,9 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
   return makeError("noimpl");
 
  progn:  // progn(body, env)
+  RETURN_IF_STALE(body);
   uintptr_t ret = nil;
   while (isCons(body)) {
-    RETURN_IF_STALE(body);
     Cons* c = toCons(body);
     body = c->cdr;
     if (body == nil) {
@@ -537,6 +552,7 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
     }
     ret = eval(c->car, env);
     RETURN_IF_ERROR(ret);
+    RETURN_IF_STALE(body);
   }
   return ret;
 }
@@ -573,15 +589,16 @@ uintptr_t subrSymbolp(uintptr_t args) {
 
 uintptr_t addOrMul(std::function<int64_t(int64_t, int64_t)> fn, int64_t init,
                    uintptr_t args) {
+  RETURN_IF_STALE(args);
   int64_t ret = init;
   while (isCons(args)) {
     uintptr_t a = safeCar(args);
-    RETURN_IF_STALE(a);
+    args = safeCdr(args);
     if (!isFnum(a)) {
       return makeError("number is expected");
     }
     ret = fn(ret, fnum(a));
-    args = safeCdr(args);
+    RETURN_IF_STALE(args);
   }
   return makeFixnum(ret);
 }
