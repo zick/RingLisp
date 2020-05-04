@@ -71,8 +71,7 @@ uintptr_t user_env;
 
 void initHeap() {
   generation = 0;
-  cons_area = new std::vector<uint8_t>;
-  cons_area->reserve(kConsAreaByteSize);
+  cons_area = new std::vector<uint8_t>(kConsAreaByteSize);
   cons_area_begin =
     reinterpret_cast<void*>(
         (reinterpret_cast<uintptr_t>(cons_area->data()) + (kWordSize - 1))
@@ -226,20 +225,12 @@ std::string_view skipSpaces(std::string_view str) {
 }
 
 uintptr_t makeNumOrSym(std::string_view str) {
-  int i = 0, sign = 1;
   int64_t num = 0;
-  if (str.size() >= 2 && str[0] == '-') {
-    i = 1;
-    sign = -1;
+  auto [p, _] = std::from_chars(str.data(), str.data() + str.size(), num);
+  if (p != str.data() + str.size()) {
+    return makeSymbol(std::string(str));
   }
-  while (i < str.size()) {
-    if (!isdigit(str[i])) {
-      return makeSymbol(std::string(str));
-    }
-    num = num * 10 + (str[i] - '0');
-    ++i;
-  }
-  return makeFixnum(num * sign);
+  return makeFixnum(num);
 }
 
 uintptr_t readAtom(std::string_view* str) {
@@ -533,7 +524,7 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
       RETURN_IF_STALE(a);
       // Call progn(body, env)
       body = safeCdr(o);
-      env = makeCons(pairlis(a, args), env);
+      env = makeCons(pairlis(a, args), user_env);
       goto progn;
     }
   }
