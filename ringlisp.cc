@@ -66,6 +66,7 @@ uintptr_t sym_lambda;
 uintptr_t sym_defun;
 uintptr_t sym_setq;
 uintptr_t sym_expr;
+uintptr_t sym_dot;
 uintptr_t g_env;
 uintptr_t user_env;
 
@@ -246,6 +247,22 @@ uintptr_t readAtom(std::string_view* str) {
   return makeNumOrSym(atom_str);
 }
 
+uintptr_t safeCar(uintptr_t obj) {
+  RETURN_IF_STALE(obj);
+  if (isCons(obj)) {
+    return toCons(obj)->car;
+  }
+  return nil;
+}
+
+uintptr_t safeCdr(uintptr_t obj) {
+  RETURN_IF_STALE(obj);
+  if (isCons(obj)) {
+    return toCons(obj)->cdr;
+  }
+  return nil;
+}
+
 uintptr_t nreverse(uintptr_t lst) {
   RETURN_IF_STALE(lst);
   uintptr_t ret = nil;
@@ -257,6 +274,20 @@ uintptr_t nreverse(uintptr_t lst) {
     lst = tmp;
     RETURN_IF_STALE(lst);
   }
+  return ret;
+}
+
+uintptr_t nreconc(uintptr_t lst, uintptr_t elm) {
+  RETURN_IF_STALE(lst);
+  if (!isCons(lst)) {
+    return lst;
+  }
+  uintptr_t ret = lst;
+  while (isCons(safeCdr(lst))) {
+    lst = safeCdr(lst);
+    RETURN_IF_STALE(lst);
+  }
+  toCons(lst)->cdr = elm;
   return ret;
 }
 
@@ -273,7 +304,22 @@ uintptr_t readList(std::string_view* str) {
     }
     uintptr_t elm = read(str);
     RETURN_IF_ERROR(elm);
-    ret = makeCons(elm, ret);
+    if (elm == sym_dot) {
+      *str = skipSpaces(*str);
+      if (str->empty() || (*str)[0] == kRPar) {
+        return makeError("incomplete dotted list");
+      }
+      elm = read(str);
+      RETURN_IF_ERROR(elm);
+      *str = skipSpaces(*str);
+      if (str->empty() || (*str)[0] != kRPar) {
+        return makeError("wrong dotted list");
+      }
+      *str = str->substr(1);
+      return nreconc(nreverse(ret), elm);
+    } else {
+      ret = makeCons(elm, ret);
+    }
   }
   return nreverse(ret);
 }
@@ -293,22 +339,6 @@ uintptr_t read(std::string_view* str) {
     return makeCons(makeSymbol("quote"), makeCons(elm, nil));
   }
   return readAtom(str);
-}
-
-uintptr_t safeCar(uintptr_t obj) {
-  RETURN_IF_STALE(obj);
-  if (isCons(obj)) {
-    return toCons(obj)->car;
-  }
-  return nil;
-}
-
-uintptr_t safeCdr(uintptr_t obj) {
-  RETURN_IF_STALE(obj);
-  if (isCons(obj)) {
-    return toCons(obj)->cdr;
-  }
-  return nil;
 }
 
 std::string objToString(uintptr_t obj);
@@ -556,6 +586,22 @@ uintptr_t subrCdr(uintptr_t args) {
   return safeCdr(safeCar(args));
 }
 
+uintptr_t subrCaar(uintptr_t args) {
+  return safeCar(safeCar(safeCar(args)));
+}
+
+uintptr_t subrCadr(uintptr_t args) {
+  return safeCar(safeCdr(safeCar(args)));
+}
+
+uintptr_t subrCdar(uintptr_t args) {
+  return safeCdr(safeCar(safeCar(args)));
+}
+
+uintptr_t subrCddr(uintptr_t args) {
+  return safeCdr(safeCdr(safeCar(args)));
+}
+
 uintptr_t subrCons(uintptr_t args) {
   return makeCons(safeCar(args), safeCar(safeCdr(args)));
 }
@@ -643,6 +689,41 @@ uintptr_t subrCopy(uintptr_t args) {
   return copyRec(safeCar(args));
 }
 
+uintptr_t subrNreverse(uintptr_t args) {
+  return nreverse(safeCar(args));
+}
+
+uintptr_t subrAppend(uintptr_t args) {
+  uintptr_t a = safeCar(args);
+  uintptr_t b = safeCar(safeCdr(args));
+  RETURN_IF_STALE(a);
+  RETURN_IF_STALE(b);
+  uintptr_t ret = makeCons(nil, nil);
+  uintptr_t tmp = ret;
+  while (isCons(a)) {
+    toCons(tmp)->cdr = makeCons(safeCar(a), nil);
+    tmp = safeCdr(tmp);
+    a = safeCdr(a);
+    RETURN_IF_STALE(a);
+  }
+  toCons(tmp)->cdr = b;
+  return safeCdr(ret);
+}
+
+uintptr_t subrAssoc(uintptr_t args) {
+  uintptr_t key = safeCar(args);
+  uintptr_t alist = safeCar(safeCdr(args));
+  RETURN_IF_STALE(alist);
+  while (isCons(alist)) {
+    if (safeCar(safeCar(alist)) == key) {
+      return safeCar(alist);
+    }
+    alist = safeCdr(alist);
+    RETURN_IF_STALE(alist);
+  }
+  return nil;
+}
+
 int main() {
   initHeap();
   nil = makeNil();
@@ -654,11 +735,16 @@ int main() {
   sym_setq = makeSymbol("setq");
   sym_expr = makeSymbol("expr");  // only for internal use
   symbol_map->erase("expr");  // unintern expr not to expose it
+  sym_dot = makeSymbol(".");
 
   g_env = makeCons(nil, nil);
   addToEnv(sym_t, sym_t, g_env);
   addToEnv(makeSymbol("car"), makeSubr(subrCar), g_env);
   addToEnv(makeSymbol("cdr"), makeSubr(subrCdr), g_env);
+  addToEnv(makeSymbol("caar"), makeSubr(subrCaar), g_env);
+  addToEnv(makeSymbol("cadr"), makeSubr(subrCadr), g_env);
+  addToEnv(makeSymbol("cdar"), makeSubr(subrCdar), g_env);
+  addToEnv(makeSymbol("cddr"), makeSubr(subrCddr), g_env);
   addToEnv(makeSymbol("cons"), makeSubr(subrCons), g_env);
   addToEnv(makeSymbol("eq"), makeSubr(subrEq), g_env);
   addToEnv(makeSymbol("atom"), makeSubr(subrAtom), g_env);
@@ -671,6 +757,9 @@ int main() {
   addToEnv(makeSymbol("mod"), makeSubr(subrMod), g_env);
   addToEnv(makeSymbol("list"), makeSubr(subrList), g_env);
   addToEnv(makeSymbol("copy"), makeSubr(subrCopy), g_env);
+  addToEnv(makeSymbol("nreverse"), makeSubr(subrNreverse), g_env);
+  addToEnv(makeSymbol("append"), makeSubr(subrAppend), g_env);
+  addToEnv(makeSymbol("assoc"), makeSubr(subrAssoc), g_env);
   user_env = makeCons(nil, g_env);
 
   saved_area_end = alloc_head;
