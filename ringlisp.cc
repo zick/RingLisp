@@ -2,10 +2,12 @@
 #include <array>
 #include <charconv>
 #include <ctype.h>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 #include <string_view>
 #include <unistd.h>
