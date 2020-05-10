@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string>
 #include <string_view>
+#include <unistd.h>
 #include <vector>
 
 using std::int64_t;
@@ -16,11 +17,13 @@ using std::uint64_t;
 using std::uintptr_t;
 
 constexpr int kWordSize = 16;
-constexpr int kConsAreaByteSize = 1024 * kWordSize;
 
 constexpr char kLPar = '(';
 constexpr char kRPar = ')';
 constexpr char kQuote = '\'';
+
+int numMaxCons = 1024;
+std::string* traceFn;
 
 struct Cons {
   uintptr_t car;
@@ -71,15 +74,17 @@ uintptr_t g_env;
 uintptr_t user_env;
 
 void initHeap() {
+  const int cons_area_bytesize = numMaxCons * kWordSize;
+
   generation = 0;
-  cons_area = new std::vector<uint8_t>(kConsAreaByteSize);
+  cons_area = new std::vector<uint8_t>(cons_area_bytesize);
   cons_area_begin =
     reinterpret_cast<void*>(
         (reinterpret_cast<uintptr_t>(cons_area->data()) + (kWordSize - 1))
         & ~(kWordSize - 1));
   cons_area_end =
     reinterpret_cast<void*>(
-        (reinterpret_cast<uintptr_t>(cons_area->data()) + kConsAreaByteSize)
+        (reinterpret_cast<uintptr_t>(cons_area->data()) + cons_area_bytesize)
         & ~(kWordSize - 1));
   alloc_head = reinterpret_cast<uint8_t*>(cons_area_begin);
   saved_area_end = alloc_head;
@@ -92,7 +97,7 @@ void* alloc() {
   if (alloc_head >= cons_area_end) {
     alloc_head = saved_area_end;
     generation = (generation + 1) & ((kWordSize - 1) >> 1);
-    std::cout << "... generation: " << generation << std::endl;
+    fprintf(stderr, "... generation: %d\n", generation);
   }
   void* ret = reinterpret_cast<void*>(alloc_head);
   alloc_head += kWordSize;
@@ -523,6 +528,13 @@ uintptr_t eval(uintptr_t obj, uintptr_t env) {
   }
 
   // Call apply(fn, args, env)
+  if (traceFn && isType(op, Type::kSym) &&
+      *toData(op)->data.str == *traceFn) {
+    static uint8_t* prev_alloc_head = alloc_head;
+    fprintf(stderr, "... %s (%p [%ld bytes])\n", traceFn->c_str(),
+            alloc_head, alloc_head - prev_alloc_head);
+    prev_alloc_head = alloc_head;
+  }
   uintptr_t fn = eval(op, env);
   args = evlis(args, env);
  apply:  // apply(fn, args, env)
@@ -724,8 +736,7 @@ uintptr_t subrAssoc(uintptr_t args) {
   return nil;
 }
 
-int main() {
-  initHeap();
+void initSymbol() {
   nil = makeNil();
   sym_t = makeSymbol("t");
   sym_quote = makeSymbol("quote");
@@ -736,7 +747,9 @@ int main() {
   sym_expr = makeSymbol("expr");  // only for internal use
   symbol_map->erase("expr");  // unintern expr not to expose it
   sym_dot = makeSymbol(".");
+}
 
+void initEnvironment() {
   g_env = makeCons(nil, nil);
   addToEnv(sym_t, sym_t, g_env);
   addToEnv(makeSymbol("car"), makeSubr(subrCar), g_env);
@@ -761,7 +774,44 @@ int main() {
   addToEnv(makeSymbol("append"), makeSubr(subrAppend), g_env);
   addToEnv(makeSymbol("assoc"), makeSubr(subrAssoc), g_env);
   user_env = makeCons(nil, g_env);
+}
 
+void usage(char* name) {
+  printf("Usage:\n");;
+  printf("%s [-n size] [-t function]\n", name);
+}
+
+void initFlag(int* argc, char*** argv) {
+  int c;
+  while ((c = getopt(*argc, *argv, "n:t:")) != -1) {
+    if (c == 'n') {
+      const int len = strnlen(optarg, 255);
+      auto [p, _] = std::from_chars(optarg, optarg + len, numMaxCons);
+      if (p != optarg + len) {
+        usage((*argv)[0]);
+        exit(1);
+      }
+    } else if (c == 't') {
+      if (traceFn) {
+        usage((*argv)[0]);
+        exit(1);
+      }
+      traceFn = new std::string;
+      *traceFn = optarg;
+    } else {
+      usage((*argv)[0]);
+      exit(1);
+    }
+  }
+  *argc -= optind;
+  *argv += optind;
+}
+
+int main(int argc, char** argv) {
+  initFlag(&argc, &argv);
+  initHeap();
+  initSymbol();
+  initEnvironment();
   saved_area_end = alloc_head;
 
   std::string str;
